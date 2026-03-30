@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { loadScheduleConfig, parseMessages, pickMessage, shouldExecute } from "./schedule";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 
@@ -59,8 +60,29 @@ export default async function handler(
         });
     }
 
-    const warmupMessage = process.env.WARMUP_MESSAGE || DEFAULT_WARMUP_MESSAGE;
-    const timestamp = new Date().toISOString();
+    const now = new Date();
+    const config = loadScheduleConfig();
+    const schedule = shouldExecute(now, config);
+
+    if (!schedule.execute) {
+        console.log(
+            `[warmup] skipped: ${schedule.reason} (target=${schedule.targetHour}:${String(schedule.targetMinute).padStart(2, "0")})`
+        );
+        return res.status(200).json({
+            skipped: true,
+            reason: schedule.reason,
+            targetHour: schedule.targetHour,
+            targetMinute: schedule.targetMinute,
+            timestamp: now.toISOString(),
+        });
+    }
+
+    const messages = parseMessages(
+        process.env.WARMUP_MESSAGES ?? process.env.WARMUP_MESSAGE,
+        DEFAULT_WARMUP_MESSAGE
+    );
+    const warmupMessage = pickMessage(messages, now);
+    const timestamp = now.toISOString();
 
     try {
         const reply = await sendWarmupMessage(oauthToken, warmupMessage);

@@ -36,23 +36,34 @@ git clone https://github.com/tappress/claude-code-warmup
 cd claude-code-warmup
 ```
 
-### 2. Set the Cron Schedule
+### 2. Configure the Schedule
 
-Edit `vercel.json` and change the `schedule` to fire 3–4 hours before your usual start time (**UTC**). Example config to run it at 6 AM UTC `"schedule": "0 6 * * *"`:
+Everything is in **one place**: the `schedule` field in `vercel.json` (standard cron expression, UTC).
 
 ```json
 {
   "crons": [
     {
       "path": "/api/warmup",
-      "schedule": "0 6 * * *"
+      "schedule": "0 6-9 * * 1-5"
     }
   ]
 }
 ```
 
+The handler **parses the cron expression** and uses a daily seed to pick one random hour and minute from the allowed values. Only the matching invocation actually calls the API; all others are **skipped** (return `200` with `{ skipped: true, reason: "..." }`).
+
+For example, `0 6-9 * * 1-5` fires 4 times per workday (hours 6, 7, 8, 9). The handler picks one random hour per day — say hour 8 — and skips the other three. The skipped invocations do no external I/O and cost nothing.
+
+| Cron expression | Invocations/day | Fires/day | Behavior |
+|---|---|---|---|
+| `0 6 * * *` | 1 | 1 | Always 6:00 UTC, every day (no randomness) |
+| `0 6-9 * * 1-5` | 4 | 1 | Random hour 6-9, workdays only |
+| `*/10 6-9 * * 1-5` | 24 | 1 | Random hour + minute, workdays |
+| `0 6,9,12 * * *` | 3 | 1 | Random pick from 6, 9, 12 |
+
 > **Tip:** Use [crontab.guru](https://crontab.guru) to build your expression.
-> Vercel free tier supports daily crons. Pro tier supports up to hourly.
+> Vercel free tier supports daily crons. Pro tier supports up to every 10 minutes.
 
 ### 3. Generate a Long-Lived OAuth Token
 

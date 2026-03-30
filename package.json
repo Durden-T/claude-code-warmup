@@ -4,13 +4,16 @@
   "description": "Scheduled Vercel function to warm up Claude Code's 5-hour rate limit window",
   "scripts": {
     "dev": "vercel dev",
-    "build": "tsc --noEmit"
+    "build": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
+    "@types/node": "^25.5.0",
     "@vercel/node": "^4.0.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.2"
   }
 }
