@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { loadScheduleConfig, parseMessages, pickMessage, shouldExecute } from "./schedule";
+import { computeDelay, isAllowedWeekday, parseMessages, pickMessage } from "./schedule";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 
@@ -42,12 +42,12 @@ async function sendWarmupMessage(
     return data.content.find((b) => b.type === "text")?.text ?? "(no text)";
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export default async function handler(
     req: VercelRequest,
     res: VercelResponse
 ) {
-    // Only allow Vercel cron invocations.
-    // Vercel auto-generates CRON_SECRET and sends it as: Authorization: Bearer <CRON_SECRET>
     const cronSecret = process.env.CRON_SECRET;
     if (!cronSecret || req.headers.authorization !== `Bearer ${cronSecret}`) {
         return res.status(401).json({ error: "Unauthorized" });
@@ -61,20 +61,22 @@ export default async function handler(
     }
 
     const now = new Date();
-    const config = loadScheduleConfig();
-    const schedule = shouldExecute(now, config);
 
-    if (!schedule.execute) {
-        console.log(
-            `[warmup] skipped: ${schedule.reason} (target=${schedule.targetHour}:${String(schedule.targetMinute).padStart(2, "0")})`
-        );
+    const weekdays = process.env.WARMUP_WEEKDAYS ?? "*";
+    if (!isAllowedWeekday(now, weekdays)) {
+        console.log(`[warmup] skipped: weekday ${now.getUTCDay()} not in "${weekdays}"`);
         return res.status(200).json({
             skipped: true,
-            reason: schedule.reason,
-            targetHour: schedule.targetHour,
-            targetMinute: schedule.targetMinute,
+            reason: "day-of-week excluded",
             timestamp: now.toISOString(),
         });
+    }
+
+    const maxDelay = Number(process.env.WARMUP_DELAY_MAX ?? "0");
+    const delaySec = computeDelay(now, maxDelay);
+    if (delaySec > 0) {
+        console.log(`[warmup] sleeping ${delaySec}s before execution`);
+        await sleep(delaySec * 1000);
     }
 
     const messages = parseMessages(
@@ -87,17 +89,18 @@ export default async function handler(
     try {
         const reply = await sendWarmupMessage(oauthToken, warmupMessage);
 
-        console.log(`[warmup] ✓ Success at ${timestamp}. Claude replied: "${reply}"`);
+        console.log(`[warmup] done at ${timestamp} (delayed ${delaySec}s). Reply: "${reply}"`);
 
         return res.status(200).json({
             success: true,
             message: "Warmup sent successfully!",
             claudeReply: reply,
+            delaySec,
             timestamp,
         });
     } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
-        console.error(`[warmup] ✗ Error at ${timestamp}: ${error}`);
+        console.error(`[warmup] error at ${timestamp}: ${error}`);
         return res.status(500).json({ success: false, error, timestamp });
     }
 }

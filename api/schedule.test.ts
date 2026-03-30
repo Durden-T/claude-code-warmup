@@ -1,15 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-    dailyTargetTime,
+    computeDelay,
     expandCronField,
+    isAllowedWeekday,
     parseMessages,
-    parseCronSchedule,
     pickMessage,
-    shouldExecute,
-    type ScheduleConfig,
 } from "./schedule";
-
-const workdayConfig: ScheduleConfig = parseCronSchedule("0 6-9 * * 1-5");
 
 describe("expandCronField", () => {
     it("expands wildcard to full range", () => {
@@ -41,109 +37,68 @@ describe("expandCronField", () => {
     });
 });
 
-describe("parseCronSchedule", () => {
-    it("parses workday schedule", () => {
-        const config = parseCronSchedule("0 6-9 * * 1-5");
-        expect(config.minutes).toEqual([0]);
-        expect(config.hours).toEqual([6, 7, 8, 9]);
-        expect(config.weekdays).toEqual([1, 2, 3, 4, 5]);
+describe("computeDelay", () => {
+    it("returns 0 when maxSeconds is 0", () => {
+        expect(computeDelay(new Date(Date.UTC(2026, 2, 15)), 0)).toBe(0);
     });
 
-    it("parses every-10-min schedule", () => {
-        const config = parseCronSchedule("*/10 * * * *");
-        expect(config.minutes).toEqual([0, 10, 20, 30, 40, 50]);
-        expect(config.hours.length).toBe(24);
-        expect(config.weekdays.length).toBe(7);
+    it("returns 0 when maxSeconds is negative", () => {
+        expect(computeDelay(new Date(Date.UTC(2026, 2, 15)), -10)).toBe(0);
     });
-});
 
-describe("dailyTargetTime", () => {
-    it("returns values within configured sets", () => {
+    it("returns value within range", () => {
         for (let d = 1; d <= 31; d++) {
-            const now = new Date(Date.UTC(2026, 2, d, 0, 0));
-            const { hour, minute } = dailyTargetTime(now, workdayConfig);
-            expect(workdayConfig.hours).toContain(hour);
-            expect(workdayConfig.minutes).toContain(minute);
+            const delay = computeDelay(new Date(Date.UTC(2026, 2, d)), 240);
+            expect(delay).toBeGreaterThanOrEqual(0);
+            expect(delay).toBeLessThanOrEqual(240);
         }
     });
 
     it("is deterministic for the same date", () => {
-        const a = dailyTargetTime(new Date(Date.UTC(2026, 2, 15, 8, 0)), workdayConfig);
-        const b = dailyTargetTime(new Date(Date.UTC(2026, 2, 15, 9, 30)), workdayConfig);
-        expect(a).toEqual(b);
+        const a = computeDelay(new Date(Date.UTC(2026, 2, 15, 1, 0)), 240);
+        const b = computeDelay(new Date(Date.UTC(2026, 2, 15, 23, 59)), 240);
+        expect(a).toBe(b);
     });
 
     it("varies across different dates", () => {
-        const config = parseCronSchedule("0 6-9 * * *");
-        const results = new Set<string>();
+        const delays = new Set<number>();
         for (let d = 1; d <= 30; d++) {
-            const { hour, minute } = dailyTargetTime(
-                new Date(Date.UTC(2026, 2, d, 0, 0)),
-                config
-            );
-            results.add(`${hour}:${minute}`);
+            delays.add(computeDelay(new Date(Date.UTC(2026, 2, d)), 240));
         }
-        expect(results.size).toBeGreaterThan(1);
-    });
-
-    it("returns exact value when only one option", () => {
-        const config = parseCronSchedule("15 7 * * *");
-        const { hour, minute } = dailyTargetTime(new Date(Date.UTC(2026, 0, 1)), config);
-        expect(hour).toBe(7);
-        expect(minute).toBe(15);
+        expect(delays.size).toBeGreaterThan(1);
     });
 });
 
-describe("shouldExecute", () => {
-    it("skips weekends with workday config", () => {
-        const saturday = new Date(Date.UTC(2026, 2, 28, 7, 0));
-        expect(saturday.getUTCDay()).toBe(6);
-        const result = shouldExecute(saturday, workdayConfig);
-        expect(result.execute).toBe(false);
-        expect(result.reason).toBe("day-of-week excluded");
-    });
-
-    it("skips Sunday with workday config", () => {
-        const sunday = new Date(Date.UTC(2026, 2, 29, 7, 0));
-        expect(sunday.getUTCDay()).toBe(0);
-        expect(shouldExecute(sunday, workdayConfig).execute).toBe(false);
-    });
-
-    it("allows weekends with wildcard weekday", () => {
-        const config = parseCronSchedule("0 6-9 * * *");
-        const saturday = new Date(Date.UTC(2026, 2, 28, 0, 0));
-        const { hour, minute } = dailyTargetTime(saturday, config);
-        const atTarget = new Date(Date.UTC(2026, 2, 28, hour, minute));
-        expect(shouldExecute(atTarget, config).execute).toBe(true);
-    });
-
-    it("skips when hour does not match target", () => {
-        const monday = new Date(Date.UTC(2026, 2, 30, 0, 0));
-        const { hour } = dailyTargetTime(monday, workdayConfig);
-        const wrongHour = hour === 6 ? 9 : 6;
-        const now = new Date(Date.UTC(2026, 2, 30, wrongHour, 0));
-        const result = shouldExecute(now, workdayConfig);
-        expect(result.execute).toBe(false);
-        expect(result.reason).toContain("hour mismatch");
-    });
-
-    it("skips when minute does not match target", () => {
-        const monday = new Date(Date.UTC(2026, 2, 30, 0, 0));
-        const { hour, minute } = dailyTargetTime(monday, workdayConfig);
-        const wrongMinute = minute === 0 ? 30 : 0;
-        const now = new Date(Date.UTC(2026, 2, 30, hour, wrongMinute));
-        const result = shouldExecute(now, workdayConfig);
-        if (wrongMinute !== minute) {
-            expect(result.execute).toBe(false);
-            expect(result.reason).toContain("minute mismatch");
+describe("isAllowedWeekday", () => {
+    it("allows all days with wildcard", () => {
+        for (let d = 22; d <= 28; d++) {
+            expect(isAllowedWeekday(new Date(Date.UTC(2026, 2, d)), "*")).toBe(true);
         }
     });
 
-    it("executes when time matches exactly", () => {
-        const monday = new Date(Date.UTC(2026, 2, 30, 0, 0));
-        const { hour, minute } = dailyTargetTime(monday, workdayConfig);
-        const now = new Date(Date.UTC(2026, 2, 30, hour, minute));
-        expect(shouldExecute(now, workdayConfig).execute).toBe(true);
+    it("filters weekends with 1-5", () => {
+        const saturday = new Date(Date.UTC(2026, 2, 28));
+        expect(saturday.getUTCDay()).toBe(6);
+        expect(isAllowedWeekday(saturday, "1-5")).toBe(false);
+    });
+
+    it("allows Monday with 1-5", () => {
+        const monday = new Date(Date.UTC(2026, 2, 30));
+        expect(monday.getUTCDay()).toBe(1);
+        expect(isAllowedWeekday(monday, "1-5")).toBe(true);
+    });
+
+    it("filters Sunday with 1-5", () => {
+        const sunday = new Date(Date.UTC(2026, 2, 29));
+        expect(sunday.getUTCDay()).toBe(0);
+        expect(isAllowedWeekday(sunday, "1-5")).toBe(false);
+    });
+
+    it("supports list syntax", () => {
+        const wednesday = new Date(Date.UTC(2026, 2, 25));
+        expect(wednesday.getUTCDay()).toBe(3);
+        expect(isAllowedWeekday(wednesday, "1,3,5")).toBe(true);
+        expect(isAllowedWeekday(wednesday, "2,4")).toBe(false);
     });
 });
 

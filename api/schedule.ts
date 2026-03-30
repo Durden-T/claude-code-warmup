@@ -1,19 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
-export interface ScheduleConfig {
-    hours: number[];
-    minutes: number[];
-    weekdays: number[];
-}
-
-export interface ScheduleResult {
-    execute: boolean;
-    reason: string;
-    targetHour: number;
-    targetMinute: number;
-}
-
 /** Expand a single cron field (e.g. "1-5", "6,7,8", "*") into sorted integers. */
 export function expandCronField(
     field: string,
@@ -58,37 +42,7 @@ function sequence(min: number, max: number): number[] {
     return arr;
 }
 
-/**
- * Read the cron schedule from vercel.json and parse it into structured config.
- */
-export function loadScheduleConfig(): ScheduleConfig {
-    const raw = readFileSync(
-        resolve(__dirname, "..", "vercel.json"),
-        "utf-8"
-    );
-    const vercelConfig = JSON.parse(raw) as {
-        crons?: Array<{ schedule?: string }>;
-    };
-    const schedule = vercelConfig.crons?.[0]?.schedule ?? "0 * * * *";
-    return parseCronSchedule(schedule);
-}
-
-/**
- * Parse a 5-field cron expression into ScheduleConfig.
- * Fields: minute hour day-of-month month day-of-week
- */
-export function parseCronSchedule(expression: string): ScheduleConfig {
-    const fields = expression.trim().split(/\s+/);
-    return {
-        minutes: expandCronField(fields[0] ?? "*", 0, 59),
-        hours: expandCronField(fields[1] ?? "*", 0, 23),
-        weekdays: expandCronField(fields[4] ?? "*", 0, 6),
-    };
-}
-
-/**
- * Deterministic hash for a UTC date. Same date always yields same number.
- */
+/** Deterministic FNV-1a hash for a UTC date. Same date always yields same number. */
 function hashDate(year: number, month: number, day: number): number {
     let h = 2166136261;
     const s = `${year}-${month}-${day}`;
@@ -105,27 +59,26 @@ function seededInt(seed: number, min: number, max: number): number {
     return min + (((seed % range) + range) % range);
 }
 
+/** Check if today's UTC weekday is in the allowed set (cron weekday syntax). */
+export function isAllowedWeekday(now: Date, weekdays: string): boolean {
+    return expandCronField(weekdays, 0, 6).includes(now.getUTCDay());
+}
+
 /**
- * Pick today's random target hour and minute from the allowed values.
+ * Compute a deterministic random delay in seconds for today, between 0 and maxSeconds.
+ * Same date always produces the same delay.
  */
-export function dailyTargetTime(
-    now: Date,
-    config: ScheduleConfig
-): { hour: number; minute: number } {
+export function computeDelay(now: Date, maxSeconds: number): number {
+    if (maxSeconds <= 0) return 0;
     const seed = hashDate(
         now.getUTCFullYear(),
         now.getUTCMonth(),
         now.getUTCDate()
     );
-    const hour = config.hours[seededInt(seed, 0, config.hours.length - 1)];
-    const minute =
-        config.minutes[seededInt(seed ^ 0x9e3779b9, 0, config.minutes.length - 1)];
-    return { hour, minute };
+    return seededInt(seed, 0, maxSeconds);
 }
 
-/**
- * Parse WARMUP_MESSAGES env var (JSON array or plain string) into an array.
- */
+/** Parse WARMUP_MESSAGES env var (JSON array or plain string) into an array. */
 export function parseMessages(
     raw: string | undefined,
     fallback: string
@@ -145,9 +98,7 @@ export function parseMessages(
     return [trimmed];
 }
 
-/**
- * Pick a message from the array using the daily seed.
- */
+/** Pick a message from the array using the daily seed. */
 export function pickMessage(messages: string[], now: Date): string {
     if (messages.length <= 1) return messages[0];
     const seed = hashDate(
@@ -156,49 +107,4 @@ export function pickMessage(messages: string[], now: Date): string {
         now.getUTCDate()
     );
     return messages[seededInt(seed ^ 0x243f6a88, 0, messages.length - 1)];
-}
-
-/**
- * Decide whether this cron invocation should send the warmup.
- */
-export function shouldExecute(
-    now: Date,
-    config: ScheduleConfig
-): ScheduleResult {
-    const day = now.getUTCDay();
-    if (!config.weekdays.includes(day)) {
-        return {
-            execute: false,
-            reason: "day-of-week excluded",
-            targetHour: -1,
-            targetMinute: -1,
-        };
-    }
-
-    const { hour: targetHour, minute: targetMinute } = dailyTargetTime(
-        now,
-        config
-    );
-    const currentHour = now.getUTCHours();
-    const currentMinute = now.getUTCMinutes();
-
-    if (currentHour !== targetHour) {
-        return {
-            execute: false,
-            reason: `hour mismatch (target=${targetHour}, current=${currentHour})`,
-            targetHour,
-            targetMinute,
-        };
-    }
-
-    if (currentMinute !== targetMinute) {
-        return {
-            execute: false,
-            reason: `minute mismatch (target=${targetMinute}, current=${currentMinute})`,
-            targetHour,
-            targetMinute,
-        };
-    }
-
-    return { execute: true, reason: "match", targetHour, targetMinute };
 }
